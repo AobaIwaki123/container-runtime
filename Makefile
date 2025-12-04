@@ -1,2 +1,2 @@
 build:
-	gcc -o bin/simple_container simple_container.c
+	gcc -o bin/simple_container simple_container.c -lcap -lseccomp

@@ -9,6 +9,10 @@
 #include <sys/socket.h>
 #include <linux/if.h>
 #include <sys/ioctl.h>
+#include <sys/capability.h>
+#include <sys/prctl.h>
+#include <seccomp.h>        // 追加
+#include <errno.h>          // 追加
 
 #define STACK_SIZE (1024 * 1024) // 1MBのスタック領域を確保
 
@@ -17,6 +21,99 @@ typedef struct {
     char *command;
     char *hostname;
 } container_config;
+
+// Seccompフィルターを設定
+int setup_seccomp() {
+    scmp_filter_ctx ctx;
+    
+    // デフォルトで全て許可
+    ctx = seccomp_init(SCMP_ACT_ALLOW);
+    if (ctx == NULL) {
+        perror("seccomp_init");
+        return -1;
+    }
+    
+    // 危険なシステムコールをブロック
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(reboot), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(swapon), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(swapoff), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(init_module), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(finit_module), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(delete_module), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(kexec_load), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(kexec_file_load), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(clock_settime), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(settimeofday), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(open_by_handle_at), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(bpf), 0);
+    seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(perf_event_open), 0);
+    
+    // フィルターを適用
+    if (seccomp_load(ctx) < 0) {
+        perror("seccomp_load");
+        seccomp_release(ctx);
+        return -1;
+    }
+    
+    seccomp_release(ctx);
+    printf("Seccomp filter loaded successfully\n");
+    return 0;
+}
+
+// Capabilitiesを制限する関数
+int drop_capabilities() {
+    // 保持するCapabilitiesのリスト
+    cap_value_t caps_to_keep[] = {
+        CAP_CHOWN,
+        CAP_DAC_OVERRIDE,
+        CAP_FSETID, 
+        CAP_FOWNER,
+        CAP_SETGID,
+        CAP_SETUID,
+        CAP_NET_BIND_SERVICE,
+        CAP_KILL,
+    };
+
+    int num_caps = sizeof(caps_to_keep) / sizeof(cap_value_t);
+
+    cap_t caps = cap_init();
+    if (caps == NULL) {
+        perror("cap_init");
+        return -1;
+    }
+
+    // 保持するcapabilitiesを設定
+    if (cap_set_flag(caps, CAP_EFFECTIVE, num_caps, caps_to_keep, CAP_SET) == -1) {
+        perror("cap_set_flag effective");
+        cap_free(caps);
+        return -1;
+    }
+    
+    if (cap_set_flag(caps, CAP_PERMITTED, num_caps, caps_to_keep, CAP_SET) == -1) {
+        perror("cap_set_flag permitted");
+        cap_free(caps);
+        return -1;
+    }
+    
+    if (cap_set_flag(caps, CAP_INHERITABLE, num_caps, caps_to_keep, CAP_SET) == -1) {
+        perror("cap_set_flag inheritable");
+        cap_free(caps);
+        return -1;
+    }
+
+    if (cap_set_proc(caps) == -1) {
+        perror("cap_set_proc");
+        cap_free(caps);
+        return -1;
+    }
+
+    cap_free(caps);
+
+    prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0);
+
+    printf("Capabilities dropped successfully\n");
+    return 0;
+}
 
 int setup_loopback() {
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -91,6 +188,16 @@ int child_func(void *arg) {
     // loopback インターフェースを有効化
     if (setup_loopback() == -1) {
         fprintf(stderr, "Warning: failed to setup loopback interface\n");
+    }
+
+    // Capabilitiesを制限
+    if (drop_capabilities() == -1) {
+        fprintf(stderr, "Warning: failed to drop capabilities\n");
+    }
+
+    // Seccompフィルターを適用
+    if (setup_seccomp() == -1) {
+        fprintf(stderr, "Warning: failed to setup seccomp\n");
     }
 
     // 環境変数の設定
