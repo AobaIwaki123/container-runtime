@@ -17,4 +17,7 @@ $ sudo ./bin/simple_container ~/container-test/rootfs "hostname"
 
 # マウントポイントを確認
 $ sudo ./bin/simple_container ~/container-test/rootfs "mount"
+
+# ネットワークを確認
+$ sudo ./bin/simple_container ~/container-test/rootfs "cat /proc/net/dev"
 ```

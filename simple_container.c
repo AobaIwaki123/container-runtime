@@ -6,16 +6,56 @@
 #include <sys/wait.h>
 #include <sys/mount.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <linux/if.h>
+#include <sys/ioctl.h>
 
 #define STACK_SIZE (1024 * 1024) // 1MBのスタック領域を確保
 
 typedef struct {
     char *rootfs;
     char *command;
+    char *hostname;
 } container_config;
 
+int setup_loopback() {
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) {
+        perror("socket");
+        return -1;
+    }
+
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, "lo", IFNAMSIZ);
+
+    if (ioctl(sock, SIOCGIFFLAGS, &ifr) < 0 ) {
+        perror("SIOCGIFFLAGS");
+        close(sock);
+        return -1;
+    }
+
+    ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
+
+    if (ioctl(sock, SIOCSIFFLAGS, &ifr) < 0) {
+        perror("SIOCSIFFLAGS");
+        close(sock);
+        return -1;
+    }
+
+    close(sock);
+    return 0;
+}
 int child_func(void *arg) {
     container_config *config = (container_config *)arg;
+
+    // 独立したホスト名を設定
+    if (config->hostname != NULL) {
+        if (sethostname(config->hostname, strlen(config->hostname)) == -1) {
+            perror("sethostname");
+            // 致命的ではないため続行
+        }
+    }
 
     // マウントの準備
     // MS_PRIVATEで、このnamespaceにおけるマウント操作が親namespaceに伝播しないようにする
@@ -48,8 +88,13 @@ int child_func(void *arg) {
         perror("mount /proc");
     }
 
+    // loopback インターフェースを有効化
+    if (setup_loopback() == -1) {
+        fprintf(stderr, "Warning: failed to setup loopback interface\n");
+    }
+
     // 環境変数の設定
-    char *env[] = {"PATH=/bin:/usr/bin", NULL};
+    char *env[] = {"PATH=/bin:/usr/bin:/sbin:/usr/sbin", NULL};
 
     // コマンドの実行
     char *args[] = {"/bin/sh", "-c", config->command, NULL};
@@ -68,7 +113,8 @@ int main(int argc, char *argv[]) {
 
     container_config config = {
         .rootfs = argv[1],
-        .command = argv[2]
+        .command = argv[2],
+        .hostname = "my-container"
     };
 
     // スタック領域の確保
@@ -83,7 +129,12 @@ int main(int argc, char *argv[]) {
     // CLONE_NEWNSで、Mount namespaceを作成
     // SIGCHLDで、子プロセスの終了時にSIGCHLDシグナルを送る
     pid_t pid = clone(child_func, stack + STACK_SIZE, 
-                        CLONE_NEWPID | CLONE_NEWNS | SIGCHLD,
+                        CLONE_NEWPID | 
+                        CLONE_NEWNS | 
+                        CLONE_NEWUTS |
+                        CLONE_NEWNET | 
+                        CLONE_NEWIPC | // Inter Process Comunication (IPC)を独立させることで、共有メモリへのアクセスを制限
+                        SIGCHLD,
                         &config);
     
     if (pid == -1) {
