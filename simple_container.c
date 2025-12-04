@@ -63,7 +63,7 @@ int main(int argc, char *argv[]) {
 
     container_config config = {
         .rootfs = argv[1],
-        .command = argv[1]
+        .command = argv[2]
     };
 
     // スタック領域の確保
