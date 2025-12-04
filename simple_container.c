@@ -43,6 +43,11 @@ int child_func(void *arg) {
         return 1;
     }
 
+    // psコマンドを実行するために/procをマウント
+    if (mount("proc", "/proc", "proc", 0, NULL) == -1) {
+        perror("mount /proc");
+    }
+
     // 環境変数の設定
     char *env[] = {"PATH=/bin:/usr/bin", NULL};
 
