@@ -69,3 +69,19 @@ $ sudo ./bin/simple_container ~/container-test/rootfs "mount"
 # ネットワークを確認
 $ sudo ./bin/simple_container ~/container-test/rootfs "cat /proc/net/dev"
 ```
+
+# Tests
+
+```sh
+# CPU制限のテスト
+$ sudo ./bin/simple_container -c 50 ~/container-test/rootfs "yes > /dev/null" &
+$ sudo ./bin/simple_container -c 25 ~/container-test/rootfs "yes > /dev/null" &
+
+# メモリ制限のテスト
+$ sudo ./bin/simple_container -m 100 ~/container-test/rootfs "python3 -c '
+x = []
+while True:
+    x.append(\" \" * 10000000)  # 10MB確保
+    print(len(x))
+'"
+```
